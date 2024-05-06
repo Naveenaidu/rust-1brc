@@ -23,10 +23,10 @@ struct StationValues {
 }
 
 fn read_line(data: String) -> (String, f32) {
-    let parts: Vec<&str> = data.split(';').collect();
-    let station_name = parts[0].to_string();
-    let value = parts[1].parse::<f32>().expect("Failed to parse value");
-    (station_name, value)
+    let mut parts = data.split(';');
+    let station_name = parts.next().expect("Failed to parse station name");
+    let value = parts.next().expect("Failed to parse value string").parse::<f32>().expect("Failed to parse value");
+    (station_name.to_owned(), value)
 }
 
 // Calculate the station values
