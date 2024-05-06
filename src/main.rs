@@ -26,25 +26,26 @@ struct StationValues {
     count: u32,
 }
 
-fn read_line(data: &str) -> (String, f32) {
-    let mut parts = data.split(';');
-    let station_name = parts.next().expect("Failed to parse station name");
+fn read_line(data: &Vec<u8>) -> (Vec<u8>, f32) {
+    let mut parts = data.rsplit(|&c| c == b';');
     let value_str = parts.next().expect("Failed to parse value string");
     let value = fast_float::parse(value_str).expect("Failed to parse value");
-    (station_name.to_owned(), value)
+    let station_name = parts.next().expect("Failed to parse station name");
+    (station_name.to_vec(), value)
 }
 
 // Calculate the station values
-fn calculate_station_values(reader: &mut BufReader<File>) -> FxHashMap<String, StationValues> {
-    let mut result: FxHashMap<String, StationValues> = FxHashMap::default();
-    let mut buf = String::new();
+fn calculate_station_values(reader: &mut BufReader<File>) -> FxHashMap<Vec<u8>, StationValues> {
+    let mut result: FxHashMap<Vec<u8>, StationValues> = FxHashMap::default();
+    let mut buf = Vec::new();
 
-    while let Ok(bytes_read) = reader.read_line(&mut buf) {
+    while let Ok(bytes_read) = reader.read_until(b'\n', &mut buf) {
         if bytes_read == 0 {
             break;
         }
-        let line = buf.trim();
-        let (station_name, value) = read_line(line);
+        // remove new line character
+        buf.truncate(bytes_read - 1);
+        let (station_name, value) = read_line(&buf);
         result
             .entry(station_name)
             .and_modify(|e| {
@@ -82,7 +83,7 @@ fn round_off(value: f32) -> f32 {
     (value * 10.0).round() / 10.0
 }
 
-fn write_result_stdout(result: FxHashMap<String, StationValues>) -> () {
+fn write_result_stdout(result: FxHashMap<Vec<u8>, StationValues>) -> () {
     let mut ordered_result = BTreeMap::new();
     for (station_name, station_values) in result {
         ordered_result.insert(station_name, station_values);
@@ -93,12 +94,12 @@ fn write_result_stdout(result: FxHashMap<String, StationValues>) -> () {
         if iterator.peek().is_none() {
             print!(
                 "{}={:.1}/{:.1}/{:.1}}}",
-                station_name, station_values.min, station_values.mean, station_values.max
+                std::str::from_utf8(station_name).expect("Unable to validate station name as UTF-8"), station_values.min, station_values.mean, station_values.max
             );
         } else {
             print!(
                 "{}={:.1}/{:.1}/{:.1}, ",
-                station_name, station_values.min, station_values.mean, station_values.max
+                std::str::from_utf8(station_name).expect("Unable to validate station name as UTF-8"), station_values.min, station_values.mean, station_values.max
             );
         }
     }
@@ -143,7 +144,7 @@ mod tests {
 
             // compare two hashmaps
             for (station_name, station_values) in test_output.into_iter() {
-                let result_station_values = result.remove(&station_name).expect(
+                let result_station_values = result.remove(&station_name.as_bytes().to_vec()).expect(
                     ("Station not found: ".to_string() + &station_name + " in result hashmap")
                         .as_str(),
                 );
