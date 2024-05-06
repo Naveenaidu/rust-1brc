@@ -1,11 +1,11 @@
 use clap::Parser;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::time::Instant;
 use fast_float;
+use rustc_hash::FxHashMap;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -35,8 +35,8 @@ fn read_line(data: String) -> (String, f32) {
 }
 
 // Calculate the station values
-fn calculate_station_values(data: BufReader<File>) -> HashMap<String, StationValues> {
-    let mut result: HashMap<String, StationValues> = HashMap::new();
+fn calculate_station_values(data: BufReader<File>) -> FxHashMap<String, StationValues> {
+    let mut result: FxHashMap<String, StationValues> = FxHashMap::default();
     for line in data.lines() {
         let line = line.expect("Failed to read line");
         let (station_name, value) = read_line(line);
@@ -74,7 +74,7 @@ fn round_off(value: f32) -> f32 {
     (value * 10.0).round() / 10.0
 }
 
-fn write_result_stdout(result: HashMap<String, StationValues>) -> () {
+fn write_result_stdout(result: FxHashMap<String, StationValues>) -> () {
     let mut ordered_result = BTreeMap::new();
     for (station_name, station_values) in result {
         ordered_result.insert(station_name, station_values);
