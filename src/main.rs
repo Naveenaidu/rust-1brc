@@ -26,7 +26,7 @@ struct StationValues {
     count: u32,
 }
 
-fn read_line(data: String) -> (String, f32) {
+fn read_line(data: &str) -> (String, f32) {
     let mut parts = data.split(';');
     let station_name = parts.next().expect("Failed to parse station name");
     let value_str = parts.next().expect("Failed to parse value string");
@@ -35,10 +35,15 @@ fn read_line(data: String) -> (String, f32) {
 }
 
 // Calculate the station values
-fn calculate_station_values(data: BufReader<File>) -> FxHashMap<String, StationValues> {
+fn calculate_station_values(reader: &mut BufReader<File>) -> FxHashMap<String, StationValues> {
     let mut result: FxHashMap<String, StationValues> = FxHashMap::default();
-    for line in data.lines() {
-        let line = line.expect("Failed to read line");
+    let mut buf = String::new();
+
+    while let Ok(bytes_read) = reader.read_line(&mut buf) {
+        if bytes_read == 0 {
+            break;
+        }
+        let line = buf.trim();
         let (station_name, value) = read_line(line);
         result
             .entry(station_name)
@@ -58,6 +63,9 @@ fn calculate_station_values(data: BufReader<File>) -> FxHashMap<String, StationV
                 mean: value,
                 count: 1,
             });
+        
+        buf.clear();
+
     }
 
     // Calculate the mean for all entries and round off to 1 decimal place
@@ -101,9 +109,9 @@ fn main() {
     let args = Args::parse();
 
     let file = std::fs::File::open(&args.file).expect("Failed to open file");
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
 
-    let result = calculate_station_values(reader);
+    let result = calculate_station_values(&mut reader);
     write_result_stdout(result);
     let duration = start.elapsed();
     println!("\nTime taken is: {:?}", duration);
@@ -129,8 +137,8 @@ mod tests {
             let test_output = read_test_output_file(output_file_name);
 
             let file = std::fs::File::open(test_file_name.clone()).expect("Failed to open file");
-            let reader = BufReader::new(file);
-            let mut result = calculate_station_values(reader);
+            let mut reader = BufReader::new(file);
+            let mut result = calculate_station_values(&mut reader);
             let mut test_output_map_copy = test_output.clone();
 
             // compare two hashmaps
