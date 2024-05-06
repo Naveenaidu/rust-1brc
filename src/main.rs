@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::time::Instant;
+use fast_float;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -28,7 +29,8 @@ struct StationValues {
 fn read_line(data: String) -> (String, f32) {
     let mut parts = data.split(';');
     let station_name = parts.next().expect("Failed to parse station name");
-    let value = parts.next().expect("Failed to parse value string").parse::<f32>().expect("Failed to parse value");
+    let value_str = parts.next().expect("Failed to parse value string");
+    let value = fast_float::parse(value_str).expect("Failed to parse value");
     (station_name.to_owned(), value)
 }
 
