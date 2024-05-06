@@ -1,6 +1,9 @@
 use clap::Parser;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -30,11 +33,11 @@ fn read_line(data: String) -> (String, f32) {
 }
 
 // Calculate the station values
-fn calculate_station_values(data: String) -> HashMap<String, StationValues> {
+fn calculate_station_values(data: BufReader<File>) -> HashMap<String, StationValues> {
     let mut result: HashMap<String, StationValues> = HashMap::new();
     for line in data.lines() {
-        let line = line.trim();
-        let (station_name, value) = read_line(line.to_string());
+        let line = line.expect("Failed to read line");
+        let (station_name, value) = read_line(line);
         result
             .entry(station_name)
             .and_modify(|e| {
@@ -94,8 +97,11 @@ fn write_result_stdout(result: HashMap<String, StationValues>) -> () {
 fn main() {
     let start = Instant::now();
     let args = Args::parse();
-    let data = std::fs::read_to_string(args.file).expect("Failed to read file");
-    let result = calculate_station_values(data);
+
+    let file = std::fs::File::open(&args.file).expect("Failed to open file");
+    let reader = BufReader::new(file);
+
+    let result = calculate_station_values(reader);
     write_result_stdout(result);
     let duration = start.elapsed();
     println!("\nTime taken is: {:?}", duration);
@@ -105,7 +111,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use crate::{calculate_station_values, StationValues};
-    use std::{collections::HashMap, fs, path::PathBuf};
+    use std::{collections::HashMap, fs, io::BufReader, path::PathBuf};
     #[test]
     fn test_measurement_data() {
         let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -119,8 +125,10 @@ mod tests {
             let output_file_name = test_file_name.replace(".txt", ".out");
             print!("\nTest file: {}\n", test_file_name);
             let test_output = read_test_output_file(output_file_name);
-            let data = fs::read_to_string(test_file_name.clone()).expect("Failed to read file");
-            let mut result = calculate_station_values(data);
+
+            let file = std::fs::File::open(test_file_name.clone()).expect("Failed to open file");
+            let reader = BufReader::new(file);
+            let mut result = calculate_station_values(reader);
             let mut test_output_map_copy = test_output.clone();
 
             // compare two hashmaps
