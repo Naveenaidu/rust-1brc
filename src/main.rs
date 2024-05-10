@@ -1,11 +1,10 @@
 use clap::Parser;
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::BufRead;
-use std::io::BufReader;
+// use std::str::from_utf8;
 use std::time::Instant;
 use fast_float;
 use rustc_hash::FxHashMap;
+use memmap2::Mmap;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -26,26 +25,24 @@ struct StationValues {
     count: u32,
 }
 
-fn read_line(data: &Vec<u8>) -> (Vec<u8>, f32) {
+fn read_line(data: &[u8]) -> (&[u8], f32) {
     let mut parts = data.rsplit(|&c| c == b';');
     let value_str = parts.next().expect("Failed to parse value string");
     let value = fast_float::parse(value_str).expect("Failed to parse value");
     let station_name = parts.next().expect("Failed to parse station name");
-    (station_name.to_vec(), value)
+    (station_name, value)
 }
 
 // Calculate the station values
-fn calculate_station_values(reader: &mut BufReader<File>) -> FxHashMap<Vec<u8>, StationValues> {
-    let mut result: FxHashMap<Vec<u8>, StationValues> = FxHashMap::default();
-    let mut buf = Vec::new();
-
-    while let Ok(bytes_read) = reader.read_until(b'\n', &mut buf) {
-        if bytes_read == 0 {
-            break;
+fn calculate_station_values(data:&[u8]) -> FxHashMap<&[u8], StationValues> {
+    let mut result: FxHashMap<&[u8], StationValues> = FxHashMap::default();
+    let lines = data.split(|&c| c == b'\n');
+    for line in lines {
+        if line.is_empty() {
+            continue;
         }
-        // remove new line character
-        buf.truncate(bytes_read - 1);
-        let (station_name, value) = read_line(&buf);
+
+        let (station_name, value) = read_line(line);
         result
             .entry(station_name)
             .and_modify(|e| {
@@ -64,9 +61,6 @@ fn calculate_station_values(reader: &mut BufReader<File>) -> FxHashMap<Vec<u8>, 
                 mean: value,
                 count: 1,
             });
-        
-        buf.clear();
-
     }
 
     // Calculate the mean for all entries and round off to 1 decimal place
@@ -83,7 +77,7 @@ fn round_off(value: f32) -> f32 {
     (value * 10.0).round() / 10.0
 }
 
-fn write_result_stdout(result: FxHashMap<Vec<u8>, StationValues>) -> () {
+fn write_result_stdout(result: FxHashMap<&[u8], StationValues>) -> () {
     let mut ordered_result = BTreeMap::new();
     for (station_name, station_values) in result {
         ordered_result.insert(station_name, station_values);
@@ -110,9 +104,10 @@ fn main() {
     let args = Args::parse();
 
     let file = std::fs::File::open(&args.file).expect("Failed to open file");
-    let mut reader = BufReader::new(file);
+    let mmap = unsafe { Mmap::map(&file).expect("Failed to map file") };
+    let data = &*mmap;
 
-    let result = calculate_station_values(&mut reader);
+    let result = calculate_station_values(data);
     write_result_stdout(result);
     let duration = start.elapsed();
     println!("\nTime taken is: {:?}", duration);
@@ -122,7 +117,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use crate::{calculate_station_values, StationValues};
-    use std::{collections::HashMap, fs, io::BufReader, path::PathBuf};
+    use std::{collections::HashMap, fs, path::PathBuf};
+    use memmap2::Mmap;
+
     #[test]
     fn test_measurement_data() {
         let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -138,13 +135,14 @@ mod tests {
             let test_output = read_test_output_file(output_file_name);
 
             let file = std::fs::File::open(test_file_name.clone()).expect("Failed to open file");
-            let mut reader = BufReader::new(file);
-            let mut result = calculate_station_values(&mut reader);
+            let mmap = unsafe { Mmap::map(&file).expect("Failed to map file") };
+            let data = &*mmap;
+            let mut result = calculate_station_values(data);
             let mut test_output_map_copy = test_output.clone();
 
             // compare two hashmaps
             for (station_name, station_values) in test_output.into_iter() {
-                let result_station_values = result.remove(&station_name.as_bytes().to_vec()).expect(
+                let result_station_values = result.remove(station_name.as_bytes()).expect(
                     ("Station not found: ".to_string() + &station_name + " in result hashmap")
                         .as_str(),
                 );
