@@ -14,3 +14,4 @@ rust_decimal = "1.34"
 rust_decimal_macros = "1.34"
 fast-float = "0.2"
 rustc-hash = { version = "1.0"}
+memmap2 = {version = "0.9.4"}
