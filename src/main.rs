@@ -5,6 +5,7 @@ use std::time::Instant;
 use fast_float;
 use rustc_hash::FxHashMap;
 use memmap2::Mmap;
+use memchr::memchr;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -25,43 +26,45 @@ struct StationValues {
     count: u32,
 }
 
-fn read_line(data: &[u8]) -> (&[u8], f32) {
-    let mut parts = data.rsplit(|&c| c == b';');
-    let value_str = parts.next().expect("Failed to parse value string");
-    let value = fast_float::parse(value_str).expect("Failed to parse value");
-    let station_name = parts.next().expect("Failed to parse station name");
-    (station_name, value)
-}
-
 // Calculate the station values
 fn calculate_station_values(data:&[u8]) -> FxHashMap<&[u8], StationValues> {
     let mut result: FxHashMap<&[u8], StationValues> = FxHashMap::default();
-    let lines = data.split(|&c| c == b'\n');
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
+    let  mut buffer = data;
+    loop {
+        match memchr(b';', &buffer) {
+            None => {
+                break;
+            }
+            Some(comma_seperator) => {
+                let end = memchr(b'\n', &buffer[comma_seperator..]).unwrap();
+                let name = &buffer[..comma_seperator];
+                let value = &buffer[comma_seperator+1..comma_seperator+end];
+                let value = fast_float::parse(value).expect("Failed to parse value");
 
-        let (station_name, value) = read_line(line);
-        result
-            .entry(station_name)
-            .and_modify(|e| {
-                if value < e.min {
-                    e.min = value;
-                }
-                if value > e.max {
-                    e.max = value;
-                }
-                e.mean = e.mean + value;
-                e.count += 1;
-            })
-            .or_insert(StationValues {
-                min: value,
-                max: value,
-                mean: value,
-                count: 1,
-            });
+                result
+                    .entry(name)
+                    .and_modify(|e| {
+                        if value < e.min {
+                            e.min = value;
+                        }
+                        if value > e.max {
+                            e.max = value;
+                        }
+                        e.mean = e.mean + value;
+                        e.count += 1;
+                    })
+                    .or_insert(StationValues {
+                        min: value,
+                        max: value,
+                        mean: value,
+                        count: 1,
+                    });
+                buffer = &buffer[comma_seperator+end+1..];
+            }
+
+        }
     }
+
 
     // Calculate the mean for all entries and round off to 1 decimal place
     for (_, station_values) in result.iter_mut() {
