@@ -16,3 +16,4 @@ fast-float = "0.2"
 rustc-hash = { version = "1.0"}
 memmap2 = {version = "0.9.4"}
 memchr = { version = "2", default-features = false }
+crossbeam-channel = "0.5.10"
