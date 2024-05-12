@@ -1,11 +1,12 @@
 use clap::Parser;
-use std::collections::BTreeMap;
-// use std::str::from_utf8;
-use std::time::Instant;
 use fast_float;
-use rustc_hash::FxHashMap;
-use memmap2::Mmap;
 use memchr::memchr;
+use rustc_hash::FxHashMap;
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::time::Instant;
+
+const READ_BUF_SIZE: usize = 128 * 1024; // 128 KiB
 
 #[derive(Parser, Debug)]
 #[command(
@@ -26,10 +27,9 @@ struct StationValues {
     count: u32,
 }
 
-// Calculate the station values
-fn calculate_station_values(data:&[u8]) -> FxHashMap<&[u8], StationValues> {
-    let mut result: FxHashMap<&[u8], StationValues> = FxHashMap::default();
-    let  mut buffer = data;
+fn process_chunk(data: &[u8], result: &mut FxHashMap<Box<[u8]>, StationValues>) -> () {
+    let mut buffer = &data[..];
+
     loop {
         match memchr(b';', &buffer) {
             None => {
@@ -38,11 +38,11 @@ fn calculate_station_values(data:&[u8]) -> FxHashMap<&[u8], StationValues> {
             Some(comma_seperator) => {
                 let end = memchr(b'\n', &buffer[comma_seperator..]).unwrap();
                 let name = &buffer[..comma_seperator];
-                let value = &buffer[comma_seperator+1..comma_seperator+end];
-                let value = fast_float::parse(value).expect("Failed to parse value");
+                let value = &buffer[comma_seperator + 1..comma_seperator + end];
+                let value: f32 = fast_float::parse(value).expect("Failed to parse value");
 
                 result
-                    .entry(name)
+                    .entry(name.into())
                     .and_modify(|e| {
                         if value < e.min {
                             e.min = value;
@@ -59,30 +59,21 @@ fn calculate_station_values(data:&[u8]) -> FxHashMap<&[u8], StationValues> {
                         mean: value,
                         count: 1,
                     });
-                buffer = &buffer[comma_seperator+end+1..];
+                buffer = &buffer[comma_seperator + end + 1..];
             }
-
         }
     }
 
-
-    // Calculate the mean for all entries and round off to 1 decimal place
-    for (_, station_values) in result.iter_mut() {
-        station_values.mean = round_off(station_values.mean / station_values.count as f32);
-        station_values.min = round_off(station_values.min);
-        station_values.max = round_off(station_values.max);
-    }
-
-    result
+    // result
 }
 
-fn round_off(value: f32) -> f32 {
+pub fn round_off(value: f32) -> f32 {
     (value * 10.0).round() / 10.0
 }
 
-fn write_result_stdout(result: FxHashMap<&[u8], StationValues>) -> () {
+fn write_result_stdout(mut result: FxHashMap<Box<[u8]>, StationValues>) -> () {
     let mut ordered_result = BTreeMap::new();
-    for (station_name, station_values) in result {
+    for (station_name, station_values) in result.iter_mut() {
         ordered_result.insert(station_name, station_values);
     }
     let mut iterator = ordered_result.iter().peekable();
@@ -91,15 +82,129 @@ fn write_result_stdout(result: FxHashMap<&[u8], StationValues>) -> () {
         if iterator.peek().is_none() {
             print!(
                 "{}={:.1}/{:.1}/{:.1}}}",
-                std::str::from_utf8(station_name).expect("Unable to validate station name as UTF-8"), station_values.min, station_values.mean, station_values.max
+                std::str::from_utf8(station_name)
+                    .expect("Unable to validate station name as UTF-8"),
+                station_values.min,
+                station_values.mean,
+                station_values.max
             );
         } else {
             print!(
                 "{}={:.1}/{:.1}/{:.1}, ",
-                std::str::from_utf8(station_name).expect("Unable to validate station name as UTF-8"), station_values.min, station_values.mean, station_values.max
+                std::str::from_utf8(station_name)
+                    .expect("Unable to validate station name as UTF-8"),
+                station_values.min,
+                station_values.mean,
+                station_values.max
             );
         }
     }
+}
+
+fn calculate_station_values(mut file: std::fs::File) -> FxHashMap<Box<[u8]>, StationValues> {
+    // Start the processor threads
+    let (sender, receiver) = crossbeam_channel::bounded::<Box<[u8]>>(1_000);
+    let n_threads = std::thread::available_parallelism().unwrap().into();
+    let mut handles = Vec::with_capacity(n_threads);
+    for _ in 0..n_threads {
+        let receiver = receiver.clone();
+        let handle = std::thread::spawn(move || {
+            let mut result = FxHashMap::<Box<[u8]>, StationValues>::default();
+            // wait until the sender sends the chunk
+            for buf in receiver {
+                process_chunk(&buf, &mut result);
+            }
+            result
+        });
+        handles.push(handle);
+    }
+
+    // Read the file in chunks and send the chunks to the processor threads
+    let mut buf = vec![0; READ_BUF_SIZE];
+    let mut unprocessed_buffer: Vec<u8> = Vec::new();
+    loop {
+        let bytes_read = file.read(&mut buf[..]).expect("Failed to read file");
+        // println!("bytes_Read {:?}", bytes_read);
+        if bytes_read == 0 {
+            break;
+        }
+
+        let actual_buf = &mut buf[..bytes_read];
+        let last_new_line_index = match find_new_line_pos(&actual_buf) {
+            Some(index) => index,
+            None => {
+                // No newline found in the buffer. Store all the bytes in unprocessed_buffer
+                // and continue reading the file
+                // TODO: handle this case
+                unprocessed_buffer.append(&mut actual_buf.to_owned());
+                continue;
+            }
+        };
+
+        if bytes_read == last_new_line_index + 1 {
+            // If the buffer is full, then we can safely assume that the last byte is a newline
+            // and we can process the buffer
+
+            if unprocessed_buffer.len() != 0 {
+                unprocessed_buffer.append(&mut actual_buf[..(last_new_line_index + 1)].to_owned());
+                let buf_boxed = Box::<[u8]>::from(&unprocessed_buffer[..]);
+                sender.send(buf_boxed).expect("Failed to send buffer");
+                unprocessed_buffer.clear();
+            } else {
+                let buf_boxed = Box::<[u8]>::from(&actual_buf[..(last_new_line_index + 1)]);
+                sender.send(buf_boxed).expect("Failed to send buffer");
+            }
+        } else {
+            // If the buffer is not full, then we can't assume that the last byte is a newline
+            // We need to store the bytes that are not processed in unprocessed_buffer
+            // and continue reading the file
+
+            // Send chunk till last new line
+            if unprocessed_buffer.len() != 0 {
+                unprocessed_buffer.append(&mut actual_buf[..(last_new_line_index + 1)].to_owned());
+                let buf_boxed = Box::<[u8]>::from(&unprocessed_buffer[..]);
+                sender.send(buf_boxed).expect("Failed to send buffer");
+                unprocessed_buffer.clear();
+                unprocessed_buffer.append(&mut actual_buf[(last_new_line_index + 1)..].to_vec());
+            } else {
+                let buf_boxed = Box::<[u8]>::from(&actual_buf[..(last_new_line_index + 1)]);
+                sender.send(buf_boxed).expect("Failed to send buffer");
+                unprocessed_buffer.append(&mut actual_buf[(last_new_line_index + 1)..].to_vec());
+            }
+        }
+    }
+    drop(sender);
+
+    // Combine data from all threads
+    let mut result = FxHashMap::<Box<[u8]>, StationValues>::default();
+    for handle in handles {
+        let map = handle.join().unwrap();
+        for (station_name, station_values) in map.into_iter() {
+            // dbg!(station_values);
+            result
+                .entry(station_name)
+                .and_modify(|e| {
+                    if station_values.min < e.min {
+                        e.min = station_values.min;
+                    }
+                    if station_values.max > e.max {
+                        e.max = station_values.max;
+                    }
+                    e.mean = e.mean + station_values.mean;
+                    e.count += station_values.count;
+                })
+                .or_insert(station_values);
+        }
+    }
+
+    // Calculate the mean for all entries and round off to 1 decimal place
+    for (_name, station_values) in result.iter_mut() {
+        station_values.mean = round_off(station_values.mean / station_values.count as f32);
+        station_values.min = round_off(station_values.min);
+        station_values.max = round_off(station_values.max);
+    }
+
+    return result
 }
 
 fn main() {
@@ -107,21 +212,23 @@ fn main() {
     let args = Args::parse();
 
     let file = std::fs::File::open(&args.file).expect("Failed to open file");
-    let mmap = unsafe { Mmap::map(&file).expect("Failed to map file") };
-    let data = &*mmap;
-
-    let result = calculate_station_values(data);
+    let result = calculate_station_values(file);
     write_result_stdout(result);
+
     let duration = start.elapsed();
     println!("\nTime taken is: {:?}", duration);
+}
 
+fn find_new_line_pos(bytes: &[u8]) -> Option<usize> {
+    // In this case (position is not far enough),
+    // naive version is faster than bstr (memchr)
+    bytes.iter().rposition(|&b| b == b'\n')
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{calculate_station_values, StationValues};
+    use crate::{StationValues, calculate_station_values};
     use std::{collections::HashMap, fs, path::PathBuf};
-    use memmap2::Mmap;
 
     #[test]
     fn test_measurement_data() {
@@ -138,9 +245,8 @@ mod tests {
             let test_output = read_test_output_file(output_file_name);
 
             let file = std::fs::File::open(test_file_name.clone()).expect("Failed to open file");
-            let mmap = unsafe { Mmap::map(&file).expect("Failed to map file") };
-            let data = &*mmap;
-            let mut result = calculate_station_values(data);
+
+            let mut result = calculate_station_values(file);
             let mut test_output_map_copy = test_output.clone();
 
             // compare two hashmaps
