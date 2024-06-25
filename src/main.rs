@@ -121,57 +121,35 @@ fn calculate_station_values(mut file: std::fs::File) -> FxHashMap<Box<[u8]>, Sta
 
     // Read the file in chunks and send the chunks to the processor threads
     let mut buf = vec![0; READ_BUF_SIZE];
-    let mut unprocessed_buffer: Vec<u8> = Vec::new();
+    let mut bytes_not_processed = 0;
     loop {
-        let bytes_read = file.read(&mut buf[..]).expect("Failed to read file");
-        // println!("bytes_Read {:?}", bytes_read);
+        let bytes_read = file.read(&mut buf[bytes_not_processed..]).expect("Failed to read file");
         if bytes_read == 0 {
             break;
         }
 
-        let actual_buf = &mut buf[..bytes_read];
+        let actual_buf = &mut buf[..bytes_not_processed+bytes_read];
         let last_new_line_index = match find_new_line_pos(&actual_buf) {
             Some(index) => index,
             None => {
-                // No newline found in the buffer. Store all the bytes in unprocessed_buffer
-                // and continue reading the file
-                // TODO: handle this case
-                unprocessed_buffer.append(&mut actual_buf.to_owned());
-                continue;
+                println!("No new line found in the read buffer");
+                bytes_not_processed += bytes_read;
+                if bytes_not_processed == buf.len(){
+                    panic!("No new line found in the read buffer");
+                }
+                continue; // try again, maybe we next read will have a newline
             }
         };
 
-        if bytes_read == last_new_line_index + 1 {
-            // If the buffer is full, then we can safely assume that the last byte is a newline
-            // and we can process the buffer
+        let buf_boxed = Box::<[u8]>::from(&actual_buf[..(last_new_line_index + 1)]);
+        sender.send(buf_boxed).expect("Failed to send buffer");
 
-            if unprocessed_buffer.len() != 0 {
-                unprocessed_buffer.append(&mut actual_buf[..(last_new_line_index + 1)].to_owned());
-                let buf_boxed = Box::<[u8]>::from(&unprocessed_buffer[..]);
-                sender.send(buf_boxed).expect("Failed to send buffer");
-                unprocessed_buffer.clear();
-            } else {
-                let buf_boxed = Box::<[u8]>::from(&actual_buf[..(last_new_line_index + 1)]);
-                sender.send(buf_boxed).expect("Failed to send buffer");
-            }
-        } else {
-            // If the buffer is not full, then we can't assume that the last byte is a newline
-            // We need to store the bytes that are not processed in unprocessed_buffer
-            // and continue reading the file
-
-            // Send chunk till last new line
-            if unprocessed_buffer.len() != 0 {
-                unprocessed_buffer.append(&mut actual_buf[..(last_new_line_index + 1)].to_owned());
-                let buf_boxed = Box::<[u8]>::from(&unprocessed_buffer[..]);
-                sender.send(buf_boxed).expect("Failed to send buffer");
-                unprocessed_buffer.clear();
-                unprocessed_buffer.append(&mut actual_buf[(last_new_line_index + 1)..].to_vec());
-            } else {
-                let buf_boxed = Box::<[u8]>::from(&actual_buf[..(last_new_line_index + 1)]);
-                sender.send(buf_boxed).expect("Failed to send buffer");
-                unprocessed_buffer.append(&mut actual_buf[(last_new_line_index + 1)..].to_vec());
-            }
-        }
+        actual_buf.copy_within(last_new_line_index+1.., 0);
+        // You cannot use bytes_not_processed = bytes_read - last_new_line_index
+        // - 1; because the buffer will contain unprocessed bytes from the
+        // previous iteration and the new line index will be calculated from the
+        // start of the buffer
+        bytes_not_processed = actual_buf.len() - last_new_line_index - 1;
     }
     drop(sender);
 
