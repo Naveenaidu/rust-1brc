@@ -2,7 +2,7 @@
 
 1️⃣🐝🏎️ [The One Billion Row Challenge](https://github.com/gunnarmorling/1brc) -- A fun exploration of how quickly 1B rows from a text file can be aggregated. This repo contains my implementation in Rust! 
 
-I wrote a detailed blog about my implementation approach, you can check it out [here](). 
+I wrote a detailed blog about my implementation approach, you can check it out [here](https://naveenaidu.dev/tackling-the-1-billion-row-challenge-in-rust-a-journey-from-5-minutes-to-9-seconds). 
 ## Record of iterations
 
 Final implementation approach looks like this: 
